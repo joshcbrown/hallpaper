@@ -22,7 +22,7 @@ maintainer:         joshcarlbrown@gmail.com
 extra-source-files: CHANGELOG.md
 
 executable wallpapers
-    main-is:          Main.hs
+    main-is:          Wallpapers.hs
 
     -- Modules included in this executable, other than Main.
     -- other-modules:
@@ -31,6 +31,8 @@ executable wallpapers
     -- other-extensions:
     build-depends:    base ^>=4.17.2.0,
                       turtle ^>= 1.6.1,
+                      random-shuffle ^>=0.0.4,
+                      random,
                       filepath,
                       foldl,
                       text,
