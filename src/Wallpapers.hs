@@ -55,7 +55,7 @@ toggle :: MVar ThreadState -> IO ()
 toggle v = modifyMVar_ v $ \s@(ThreadState{..}) -> do
     killThread threadId
     shuffled <- shuffle' files (length files) <$> newStdGen
-    let newJob = if inPomo then mapM_ (uncurry displayPomo) (align shuffled) else mapM_ display shuffled
+    let newJob = if inPomo then mapM_ display shuffled else mapM_ (uncurry displayPomo) (align shuffled)
     newThread <- forkIO newJob
     when inPomo $ notify "leaving pomo"
     pure $ s{inPomo = not inPomo, threadId = newThread}
@@ -67,12 +67,16 @@ setupDBus state = do
     client <- connectSession
     let serviceName = busName_ "org.jbrown.hallpaper"
     -- the options we have here ensure that we don't need to check the result
-    -- of the name request
-    void $ requestName client serviceName [nameAllowReplacement, nameReplaceExisting, nameDoNotQueue]
+    -- of the name request, but print result anyway to verify while testing
+    requestName
+        client
+        serviceName
+        [nameAllowReplacement, nameReplaceExisting, nameDoNotQueue]
+        >>= print
     stateVar <- newMVar state
     export
         client
-        "/togglePomo"
+        "/"
         defaultInterface
             { interfaceName = "org.jbrown.toggle"
             , interfaceMethods =
@@ -87,6 +91,7 @@ start files = do
 
 daemonMain :: IO ()
 daemonMain = do
+    Notify.init (Just "daemon")
     homePath <- home
     let fstream = ls (homePath ++ "/.config/sway/wallpapers")
     fs <- filter isImg <$> fold fstream Fold.list
@@ -98,8 +103,12 @@ daemonMain = do
 clientMain :: IO ()
 clientMain = do
     client <- connectSession
+    let req =
+            (methodCall "/" "org.jbrown.toggle" "toggle")
+                { methodCallDestination = Just "org.jbrown.hallpaper"
+                }
 
-    reply <- call client (methodCall "/togglePomo" "org.jbrown.toggle" "toggle")
+    reply <- call client req
 
     -- Handle the reply
     case reply of
