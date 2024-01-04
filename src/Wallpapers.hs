@@ -2,11 +2,15 @@
 
 module Wallpapers where
 
-import Control.Concurrent (MVar, ThreadId, forkIO, killThread, modifyMVar_, newEmptyMVar, newMVar)
+import Control.Arrow ((&&&))
+import Control.Concurrent (MVar, ThreadId, forkIO, killThread, modifyMVar_, newEmptyMVar, newMVar, readMVar)
 import Control.Concurrent.MVar (takeMVar)
 import qualified Control.Foldl as Fold
 import DBus
 import DBus.Client
+import Data.Maybe (isJust)
+import qualified Data.Text as T
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import qualified GI.Notify as Notify
 import System.FilePath (takeExtension)
 import System.Random
@@ -14,7 +18,8 @@ import System.Random.Shuffle
 import Turtle hiding (export)
 
 data PomoState = Work | ShortBreak | LongBreak
-data ThreadState = ThreadState {inPomo :: Bool, threadId :: ThreadId, files :: [FilePath]}
+data Pomo = Pomo {state :: PomoState, startTime :: UTCTime}
+data ThreadState = ThreadState {pomo :: Maybe Pomo, threadId :: ThreadId, files :: [FilePath], gen :: StdGen}
 
 times :: [PomoState]
 times = cycle [Work, ShortBreak, Work, ShortBreak, Work, ShortBreak, Work, LongBreak]
@@ -39,11 +44,16 @@ display file =
         ["img", format fp file, "--transition-fps", "140", "--transition-type", "center"]
         empty
 
-displayPomo :: FilePath -> PomoState -> IO ()
-displayPomo file state =
+displayPomo :: MVar ThreadState -> FilePath -> PomoState -> IO ()
+displayPomo v file state =
     display file
         >> notifyPomo state
+        >> modifyMVar_ v setTime
         >> sleep (stateTime state)
+  where
+    setTime s =
+        getCurrentTime
+            >>= \t -> pure s{pomo = Just $ Pomo{startTime = t, state = state}}
 
 displayNormal :: FilePath -> IO ()
 displayNormal file = display file >> sleep (20 * 60)
@@ -54,23 +64,43 @@ isImg = (`elem` [".gif", ".png", ".jpg", ".jpeg"]) . takeExtension
 toggle :: MVar ThreadState -> IO ()
 toggle v = modifyMVar_ v $ \s@(ThreadState{..}) -> do
     killThread threadId
+    let inPomo = isJust pomo
     shuffled <- shuffle' files (length files) <$> newStdGen
-    let newJob = if inPomo then mapM_ display shuffled else mapM_ (uncurry displayPomo) (align shuffled)
+    let newJob =
+            if inPomo
+                then mapM_ display shuffled
+                else mapM_ (uncurry (displayPomo v)) (align shuffled)
     newThread <- forkIO newJob
     when inPomo $ notify "leaving pomo"
-    pure $ s{inPomo = not inPomo, threadId = newThread}
+    -- pomo will be overwritten in displayPomo
+    pure $ s{pomo = Nothing, threadId = newThread}
   where
     align = (`zip` times) . cycle
+
+timeRemaining :: MVar ThreadState -> IO (Maybe NominalDiffTime)
+timeRemaining v = do
+    p <- pomo <$> readMVar v
+    case p of
+        Nothing -> pure Nothing
+        Just p' -> do
+            let (started, currState) = (startTime &&& state) p'
+            diff <- (`diffUTCTime` started) <$> getCurrentTime
+            pure . Just $ stateTime currState - diff
+
+queryTime :: MVar ThreadState -> IO ()
+queryTime v = (notify . T.pack . maybe "not in pomo" showTime) =<< timeRemaining v
+  where
+    showTime = render . (`divMod` 60) . round
+    render (m, s) = show m ++ "m" ++ show s ++ "s"
 
 setupDBus :: ThreadState -> IO ()
 setupDBus state = do
     client <- connectSession
-    let serviceName = busName_ "org.jbrown.hallpaper"
     -- the options we have here ensure that we don't need to check the result
     -- of the name request, but print result anyway to verify while testing
     requestName
         client
-        serviceName
+        (busName_ "org.jbrown.hallpaper")
         [nameAllowReplacement, nameReplaceExisting, nameDoNotQueue]
         >>= print
     stateVar <- newMVar state
@@ -80,14 +110,17 @@ setupDBus state = do
         defaultInterface
             { interfaceName = "org.jbrown.toggle"
             , interfaceMethods =
-                [autoMethod "toggle" (toggle stateVar)]
+                [ autoMethod "toggle" (toggle stateVar)
+                , autoMethod "time" (queryTime stateVar)
+                ]
             }
 
 start :: [FilePath] -> IO ThreadState
 start files = do
-    shuffled <- shuffle' files (length files) <$> newStdGen
+    gen <- newStdGen
+    let shuffled = shuffle' files (length files) gen
     threadId <- forkIO (mapM_ display shuffled)
-    pure ThreadState{threadId = threadId, files = files, inPomo = False}
+    pure ThreadState{threadId = threadId, files = files, pomo = Nothing, gen = gen}
 
 daemonMain :: IO ()
 daemonMain = do
@@ -97,14 +130,16 @@ daemonMain = do
     fs <- filter isImg <$> fold fstream Fold.list
     state <- start fs
     setupDBus state
-    -- somewhat hacky way to make the main thread block indefinitely
+    -- somewhat hacky way to make the main thread block indefinitely.
+    -- it's possible that i should be thinking about gracefully exiting on error,
+    -- via calling `disconnect`.
     newEmptyMVar >>= takeMVar
 
 clientMain :: IO ()
 clientMain = do
     client <- connectSession
     let req =
-            (methodCall "/" "org.jbrown.toggle" "toggle")
+            (methodCall "/" "org.jbrown.toggle" "time")
                 { methodCallDestination = Just "org.jbrown.hallpaper"
                 }
 
@@ -114,5 +149,4 @@ clientMain = do
     case reply of
         Left error -> putStrLn $ "Error: " ++ show error
         Right result -> putStrLn $ "Received reply: " ++ show result
-
     disconnect client

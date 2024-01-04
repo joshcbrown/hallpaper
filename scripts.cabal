@@ -34,6 +34,7 @@ library
                       random-shuffle ^>=0.0.4,
                       gi-notify ^>=0.7.27,
                       dbus ^>=1.3.2,
+                      time,
                       haskell-gi-base,
                       random,
                       filepath,
