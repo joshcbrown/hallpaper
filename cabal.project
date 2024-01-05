@@ -1,2 +1,2 @@
-packages: scripts.cabal
+packages: hallpaper.cabal
 optimization: 2
