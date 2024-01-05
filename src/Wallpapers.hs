@@ -2,24 +2,32 @@
 
 module Wallpapers where
 
+import Control.Applicative (Alternative (..))
 import Control.Arrow ((&&&))
 import Control.Concurrent (MVar, ThreadId, forkIO, killThread, modifyMVar_, newEmptyMVar, newMVar, readMVar)
 import Control.Concurrent.MVar (takeMVar)
 import qualified Control.Foldl as Fold
+import Control.Monad (void, when)
 import DBus
 import DBus.Client
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import qualified Data.Text as T
-import Data.Time.Clock (diffUTCTime, getCurrentTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
 import qualified GI.Notify as Notify
+import System.Environment (getArgs)
 import System.FilePath (takeExtension)
 import System.Random
 import System.Random.Shuffle
-import Turtle hiding (export)
+import Turtle (fold, format, fp, home, ls, procs, sleep)
 
 data PomoState = Work | ShortBreak | LongBreak
 data Pomo = Pomo {state :: PomoState, startTime :: UTCTime}
 data ThreadState = ThreadState {pomo :: Maybe Pomo, threadId :: ThreadId, files :: [FilePath], gen :: StdGen}
+
+instance Show PomoState where
+    show Work = "work"
+    show ShortBreak = "short break"
+    show LongBreak = "long break"
 
 times :: [PomoState]
 times = cycle [Work, ShortBreak, Work, ShortBreak, Work, ShortBreak, Work, LongBreak]
@@ -29,13 +37,8 @@ stateTime Work = 20 * 60
 stateTime ShortBreak = 5 * 60
 stateTime LongBreak = 15 * 60
 
-notifyPomo :: PomoState -> IO ()
-notifyPomo Work = notify "work"
-notifyPomo ShortBreak = notify "short break"
-notifyPomo LongBreak = notify "long break"
-
-notify :: Text -> IO ()
-notify message = Notify.notificationShow =<< Notify.notificationNew message Nothing Nothing
+notify :: T.Text -> IO ()
+notify message = Notify.notificationShow =<< Notify.notificationNew "hallpaperd" (Just message) Nothing
 
 display :: FilePath -> IO ()
 display file =
@@ -47,7 +50,7 @@ display file =
 displayPomo :: MVar ThreadState -> FilePath -> PomoState -> IO ()
 displayPomo v file state =
     display file
-        >> notifyPomo state
+        >> notify ("starting " `T.append` T.pack (show state))
         >> modifyMVar_ v setTime
         >> sleep (stateTime state)
   where
@@ -77,7 +80,7 @@ toggle v = modifyMVar_ v $ \s@(ThreadState{..}) -> do
   where
     align = (`zip` times) . cycle
 
-timeRemaining :: MVar ThreadState -> IO (Maybe NominalDiffTime)
+timeRemaining :: MVar ThreadState -> IO (Maybe (PomoState, NominalDiffTime))
 timeRemaining v = do
     p <- pomo <$> readMVar v
     case p of
@@ -85,12 +88,14 @@ timeRemaining v = do
         Just p' -> do
             let (started, currState) = (startTime &&& state) p'
             diff <- (`diffUTCTime` started) <$> getCurrentTime
-            pure . Just $ stateTime currState - diff
+            pure $ Just (currState, stateTime currState - diff)
 
 queryTime :: MVar ThreadState -> IO ()
-queryTime v = (notify . T.pack . maybe "not in pomo" showTime) =<< timeRemaining v
+queryTime v = notify . T.pack . maybe "not in pomo" foo =<< timeRemaining v
   where
+    foo (s, t) = show s ++ " - " ++ showTime t ++ " remaining"
     showTime = render . (`divMod` 60) . round
+    render :: (Int, Int) -> String
     render (m, s) = show m ++ "m" ++ show s ++ "s"
 
 setupDBus :: ThreadState -> IO ()
@@ -100,7 +105,7 @@ setupDBus state = do
     -- of the name request, but print result anyway to verify while testing
     requestName
         client
-        (busName_ "org.jbrown.hallpaper")
+        "org.jbrown.hallpaper"
         [nameAllowReplacement, nameReplaceExisting, nameDoNotQueue]
         >>= print
     stateVar <- newMVar state
@@ -108,7 +113,7 @@ setupDBus state = do
         client
         "/"
         defaultInterface
-            { interfaceName = "org.jbrown.toggle"
+            { interfaceName = "org.jbrown.pomo"
             , interfaceMethods =
                 [ autoMethod "toggle" (toggle stateVar)
                 , autoMethod "time" (queryTime stateVar)
@@ -124,7 +129,8 @@ start files = do
 
 daemonMain :: IO ()
 daemonMain = do
-    Notify.init (Just "daemon")
+    -- assume it works
+    void $ Notify.init (Just "daemon")
     homePath <- home
     let fstream = ls (homePath ++ "/.config/sway/wallpapers")
     fs <- filter isImg <$> fold fstream Fold.list
@@ -138,8 +144,10 @@ daemonMain = do
 clientMain :: IO ()
 clientMain = do
     client <- connectSession
+    -- definitely need to think about graceful exit here
+    method <- fromMaybe (error "required arg: time|toggle") . listToMaybe <$> getArgs
     let req =
-            (methodCall "/" "org.jbrown.toggle" "time")
+            (methodCall "/" "org.jbrown.pomo" (memberName_ method))
                 { methodCallDestination = Just "org.jbrown.hallpaper"
                 }
 
@@ -147,6 +155,6 @@ clientMain = do
 
     -- Handle the reply
     case reply of
-        Left error -> putStrLn $ "Error: " ++ show error
+        Left err -> putStrLn $ "Error: " ++ show err
         Right result -> putStrLn $ "Received reply: " ++ show result
     disconnect client

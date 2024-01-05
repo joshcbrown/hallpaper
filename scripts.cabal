@@ -40,7 +40,7 @@ library
                       filepath,
                       foldl,
                       text,
-    ghc-options: -Wall, -O2
+    ghc-options: -Wall
     hs-source-dirs:   src
     default-extensions: OverloadedStrings
     default-language: Haskell2010
@@ -55,7 +55,7 @@ executable hallpaperd
     -- other-extensions:
     build-depends:    base ^>=4.17.2.0,
                       hallpaper,
-    ghc-options: -Wall, -O2
+    ghc-options: -Wall
     hs-source-dirs:   app
     default-language: Haskell2010
 
@@ -69,6 +69,6 @@ executable hallpaper-client
     -- other-extensions:
     build-depends:    base ^>=4.17.2.0,
                       hallpaper,
-    ghc-options: -Wall, -O2
+    ghc-options: -Wall
     hs-source-dirs:   app
     default-language: Haskell2010

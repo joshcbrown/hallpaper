@@ -1,0 +1,2 @@
+packages: scripts.cabal
+optimization: 2
