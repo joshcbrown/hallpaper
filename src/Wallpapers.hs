@@ -71,7 +71,7 @@ toggle v = modifyMVar_ v $ \s@(ThreadState{..}) -> do
     shuffled <- shuffle' files (length files) <$> newStdGen
     let newJob =
             if inPomo
-                then mapM_ display shuffled
+                then mapM_ displayNormal shuffled
                 else mapM_ (uncurry (displayPomo v)) (align shuffled)
     newThread <- forkIO newJob
     when inPomo $ notify "leaving pomo"
@@ -124,7 +124,7 @@ start :: [FilePath] -> IO ThreadState
 start files = do
     gen <- newStdGen
     let shuffled = shuffle' files (length files) gen
-    threadId <- forkIO (mapM_ display shuffled)
+    threadId <- forkIO (mapM_ displayNormal shuffled)
     pure ThreadState{threadId = threadId, files = files, pomo = Nothing, gen = gen}
 
 daemonMain :: IO ()
